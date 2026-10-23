@@ -3,40 +3,122 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TrucoX Ultimate</title>
+    <title>TrucoX Ultimate Spy</title>
     <style>
-        body { margin: 0; padding: 0; background: #121212; overflow: hidden; }
-        #game-wrapper { width: 100vw; height: 100vh; position: relative; }
+        body { 
+            margin: 0; 
+            padding: 0; 
+            background: #121212; 
+            overflow: hidden; 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        #game-wrapper { 
+            width: 100vw; 
+            height: 100vh; 
+            position: relative; 
+        }
         
         /* UI Overlay */
         #overlay-ui {
-            position: fixed; top: 20px; right: 20px; z-index: 9999999;
-            display: flex; flex-direction: column; gap: 10px; align-items: flex-end;
+            position: fixed; 
+            top: 20px; 
+            right: 20px; 
+            z-index: 9999999;
+            display: flex; 
+            flex-direction: column; 
+            gap: 10px; 
+            align-items: flex-end;
+            pointer-events: none; /* Permite clicks a través del contenedor si no hay botones */
         }
+
         #btn-toggle {
-            background: #6c5ce7; color: white; border: none; padding: 12px 24px;
-            border-radius: 30px; font-weight: bold; cursor: pointer;
+            pointer-events: auto;
+            background: #6c5ce7; 
+            color: white; 
+            border: none; 
+            padding: 12px 24px;
+            border-radius: 30px; 
+            font-weight: bold; 
+            cursor: pointer;
             box-shadow: 0 4px 15px rgba(108, 92, 231, 0.4);
-            transition: transform 0.2s;
+            transition: transform 0.2s, background 0.2s;
+            font-size: 14px;
         }
-        #btn-toggle:hover { transform: scale(1.05); }
+        #btn-toggle:hover { 
+            transform: scale(1.05); 
+            background: #5a4ad1;
+        }
+        #btn-toggle.active {
+            background: #00b894;
+            box-shadow: 0 4px 15px rgba(0, 184, 148, 0.4);
+        }
         
         #card-display {
-            background: rgba(0,0,0,0.9); border: 2px solid #6c5ce7;
-            border-radius: 12px; padding: 15px; min-width: 150px;
-            text-align: center; display: none;
+            pointer-events: auto;
+            background: rgba(0,0,0,0.95); 
+            border: 2px solid #6c5ce7;
+            border-radius: 12px; 
+            padding: 15px; 
+            min-width: 180px;
+            max-width: 250px;
+            text-align: center; 
+            display: none; /* Oculto por defecto */
+            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+            animation: slideIn 0.3s ease-out;
         }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
         .card-item {
-            display: inline-block; width: 30px; height: 45px;
-            line-height: 45px; margin: 0 2px; border-radius: 4px;
-            font-weight: bold; color: white;
+            display: inline-flex;
+            justify-content: center;
+            align-items: center;
+            width: 40px; 
+            height: 55px;
+            margin: 0 4px; 
+            border-radius: 6px;
+            font-weight: bold; 
+            font-size: 18px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+            user-select: none;
         }
-        .card-high { background-color: #fdcb6e; color: #d35400; }
-        .card-low { background-color: #b2bec3; color: #2d3436; }
+        
+        /* Colores de cartas estilo TrucoX / Tradicional */
+        .card-high { 
+            background-color: #fff; 
+            color: #d35400; 
+            border: 1px solid #ddd;
+        }
+        .card-low { 
+            background-color: #f1f2f6; 
+            color: #2d3436; 
+            border: 1px solid #ccc;
+        }
         
         #status {
-            position: fixed; bottom: 10px; left: 10px;
-            color: #fff; font-size: 12px; opacity: 0.7;
+            position: fixed; 
+            bottom: 10px; 
+            left: 10px;
+            color: #fff; 
+            font-size: 12px; 
+            opacity: 0.7;
+            z-index: 1000000;
+            background: rgba(0,0,0,0.5);
+            padding: 5px 10px;
+            border-radius: 4px;
+        }
+        
+        .label-title {
+            color: #b2bec3;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+            border-bottom: 1px solid #444;
+            padding-bottom: 5px;
         }
     </style>
 </head>
@@ -46,29 +128,39 @@
 
 <div id="overlay-ui">
     <button id="btn-toggle">👁️ Ver Rival</button>
-    <div id="card-display"></div>
+    <div id="card-display">
+        <div class="label-title">Cartas del Rival</div>
+        <div id="cards-container"></div>
+    </div>
 </div>
 
-<div id="status">Iniciando proxy...</div>
+<div id="status">Iniciando...</div>
 
 <script>
-    // CONFIGURACIÓN DEL PROXY CORS
+    // CONFIGURACIÓN
     const PROXY_URL = 'https://corsproxy.io/?'; 
     const TARGET = 'https://www.trucox.com/';
+    
+    let isSpyActive = false;
+    let originalWS = window.WebSocket;
 
     async function loadGame() {
+        const statusEl = document.getElementById('status');
         try {
-            const status = document.getElementById('status');
+            statusEl.innerText = "Conectando con proxy...";
             
             // 1. Descargar HTML vía Proxy
-            status.innerText = "Conectando con proxy...";
             const response = await fetch(PROXY_URL + encodeURIComponent(TARGET));
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            
             let html = await response.text();
 
-            // 2. Corregir todas las rutas relativas
+            // 2. Corregir todas las rutas relativas para que apunten al dominio original
+            // Esto es crucial para que los CSS, JS e Imágenes carguen correctamente
             html = html.replace(/href="([^"]+)"/g, (match, p1) => {
                 return p1.startsWith('/') ? `href="${TARGET}${p1}"` : match;
             });
+            html = html.replace(/src="([^"]+)"/g, (match, p1) reemplazo corregido abajo)
             html = html.replace(/src="([^"]+)"/g, (match, p1) => {
                 return p1.startsWith('/') ? `src="${TARGET}${p1}"` : match;
             });
@@ -76,91 +168,161 @@
                 return p1.startsWith('/') ? `url('${TARGET}${p1}')` : match;
             });
 
-            // 3. Inyectar HTML
+            // 3. Inyectar HTML en el wrapper
             document.getElementById('game-wrapper').innerHTML = html;
 
-            // 4. Ejecutar scripts manuales
+            // 4. Ejecutar scripts externos manualmente
+            // Los scripts inyectados con innerHTML no se ejecutan automáticamente
             const temp = document.createElement('div');
             temp.innerHTML = html;
             const scripts = temp.querySelectorAll('script[src]');
+            
             for(let s of scripts) {
                 const newScript = document.createElement('script');
                 newScript.src = s.src;
+                // Importante: mantener async/defer si existían
+                if(s.async) newScript.async = true;
+                if(s.defer) newScript.defer = true;
+                
+                // Manejo de errores específico para evitar que rompan la UI si fallan
+                newScript.onerror = () => console.warn("Error cargando script:", s.src);
+                
+                document.body.appendChild(newScript);
+            }
+            
+            // Scripts inline simples si los hubiera (opcional, pero Vite suele usar src)
+            const inlineScripts = temp.querySelectorAll('script:not([src])');
+            for(let s of inlineScripts) {
+                const newScript = document.createElement('script');
+                newScript.textContent = s.textContent;
                 document.body.appendChild(newScript);
             }
 
-            status.innerText = "Listo. Pulsa el botón.";
+            statusEl.innerText = "Juego cargado. Pulsa 'Ver Rival'.";
             initSpy();
 
         } catch(e) {
-            document.getElementById('status').innerText = "Error: " + e.message;
+            document.getElementById('status').innerText = "Error crítico: " + e.message;
             console.error(e);
         }
     }
 
     function initSpy() {
-        // Interceptador WebSocket
-        const originalWS = window.WebSocket;
+        // Interceptamos WebSocket para leer lo que envía y recibe el juego
         window.WebSocket = function(url, protocols) {
             const ws = new originalWS(url, protocols);
-            ws.addEventListener('message', (e) => {
+            
+            ws.addEventListener('message', (event) => {
+                if (!isSpyActive) return;
+                
                 try {
-                    let data = e.data;
-                    if(data instanceof ArrayBuffer) data = new TextDecoder().decode(data);
+                    const data = JSON.parse(event.data);
                     
-                    if(typeof data === 'string') {
-                        const json = JSON.parse(data);
-                        analyzeData(json);
-                    }
-                } catch(err) {}
+                    // TrucoX usa Colyseus o websockets personalizados.
+                    // Buscamos mensajes que contengan información de cartas.
+                    // Normalmente llegan como objetos con 'code', 'data', o nombres de eventos específicos.
+                    
+                    // Intento genérico de encontrar cartas en el payload
+                    processGameData(data);
+                    
+                } catch (err) {
+                    // Si no es JSON, ignorar o loguear para debug
+                    // console.debug("No JSON message:", event.data);
+                }
             });
+
             return ws;
         };
     }
 
-    function analyzeData(obj) {
-        if(!obj) return;
-        const keys = ['opponentCards', 'opponentHand', 'hand', 'cards'];
-        for(let k of keys) {
-            if(obj[k] && Array.isArray(obj[k])) {
-                updateUI(obj[k]);
-                return;
+    function processGameData(data) {
+        // Lógica heurística para encontrar cartas en los datos crudos
+        // Las cartas suelen venir como IDs numéricos (ej: 1, 2... 40) o strings
+        
+        let cardsFound = [];
+        
+        // Estrategia 1: Buscar arrays que parezcan manos de cartas
+        if (Array.isArray(data)) {
+            // Filtrar elementos que sean números entre 1 y 40 (baraja española/truco)
+            cardsFound = data.filter(item => typeof item === 'number' && item >= 1 && item <= 40);
+        } 
+        // Estrategia 2: Objetos anidados
+        else if (typeof data === 'object') {
+            const str = JSON.stringify(data);
+            // Regex simple para buscar secuencias de números pequeños que podrían ser IDs
+            // Ajustar según estructura real de TrucoX
+            const matches = str.match(/\b(?:[1-9]|1[0-9]|2[0-9]|3[0-9]|40)\b/g);
+            if (matches) {
+                cardsFound = [...new Set(matches.map(Number))]; // Únicos
             }
         }
-        // Búsqueda recursiva
-        const found = searchDeep(obj);
-        if(found.length > 0) updateUI(found);
+
+        // Si encontramos cartas, actualizamos la UI
+        if (cardsFound.length > 0 && cardsFound.length <= 3) {
+            renderCards(cardsFound);
+        }
     }
 
-    function searchDeep(obj, visited = new Set()) {
-        if (!obj || typeof obj !== 'object' || visited.has(obj)) return [];
-        visited.add(obj);
-        if (Array.isArray(obj)) {
-            if (obj.every(i => typeof i === 'number' && i >= 1 && i <= 10) && obj.length >= 3) return obj;
+    function renderCards(ids) {
+        const container = document.getElementById('cards-container');
+        container.innerHTML = '';
+        
+        ids.forEach(id => {
+            const div = document.createElement('div');
+            div.className = 'card-item';
+            
+            // Lógica visual básica de cartas
+            // En TrucoX, las cartas altas suelen ser 1, 2, 3, 4...
+            // Usaremos una lógica simple de diseño para diferenciarlas
+            const isHigh = [1, 2, 3, 4, 12, 13, 14].includes(parseInt(id)); 
+            
+            div.classList.add(isHigh ? 'card-high' : 'card-low');
+            div.innerText = getIdName(parseInt(id));
+            
+            container.appendChild(div);
+        });
+    }
+
+    // Nombre amigable para las cartas
+    function getIdName(id) {
+        const names = {
+            1: "A", 2: "2", 3: "3", 4: "4", 5: "5", 6: "6", 7: "7",
+            12: "S", 13: "C", 14: "R", 15: "F",
+            8: "8", 9: "9", 10: "10", 11: "11",
+            16: "P", 17: "K", 18: "Q", 19: "J",
+            20: "W", 21: "V", 22: "U", 23: "T",
+            24: "Z", 25: "Y", 26: "X", 27: "W2",
+            28: "V2", 29: "U2", 30: "T2",
+            31: "S2", 32: "C2", 33: "R2", 34: "F2",
+            35: "P2", 36: "K2", 37: "Q2", 38: "J2",
+            39: "W3", 40: "V3"
+        };
+        return names[id] || id;
+    }
+
+    // Controladores de UI
+    const btnToggle = document.getElementById('btn-toggle');
+    const cardDisplay = document.getElementById('card-display');
+
+    btnToggle.addEventListener('click', () => {
+        isSpyActive = !isSpyActive;
+        
+        if (isSpyActive) {
+            btnToggle.classList.add('active');
+            btnToggle.innerText = "👁️ Ocultar Rival";
+            cardDisplay.style.display = 'block';
+            document.getElementById('status').innerText = "Spy Activo: Escuchando tráfico...";
         } else {
-            for (let k in obj) {
-                const res = searchDeep(obj[k], visited);
-                if (res.length > 0) return res;
-            }
+            btnToggle.classList.remove('active');
+            btnToggle.innerText = "👁️ Ver Rival";
+            cardDisplay.style.display = 'none';
+            document.getElementById('status').innerText = "Spy Inactivo";
         }
-        return [];
-    }
-
-    function updateUI(cards) {
-        if(!cards || cards.length === 0) return;
-        const display = document.getElementById('card-display');
-        display.style.display = 'block';
-        display.innerHTML = cards.map(c => 
-            `<span class="card-item ${c > 7 ? 'card-high' : 'card-low'}">${c}</span>`
-        ).join('');
-    }
-
-    document.getElementById('btn-toggle').addEventListener('click', () => {
-        const display = document.getElementById('card-display');
-        display.style.display = display.style.display === 'none' ? 'block' : 'none';
     });
 
-    loadGame();
+    // Iniciar carga
+    window.addEventListener('DOMContentLoaded', loadGame);
+
 </script>
 </body>
 </html>
