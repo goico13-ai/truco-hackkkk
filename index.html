@@ -34,27 +34,24 @@ code{background:#1a2334;padding:1px 5px;border-radius:5px;font-size:13px}
 <body>
 <div class="w">
   <h1>🃏 Ver cartas · TrucoX</h1>
-  <p class="sub">Menú flotante que muestra las cartas del rival. Lee el tráfico de la partida
-  (WebSocket / JSON / fetch) y lo dibuja en pantalla. Es 100% del lado del cliente: no te pueden detectar.</p>
+  <p class="sub">Menú flotante que descifra la mano del rival en www.trucox.com. Lee el tráfico de la
+  partida, decodifica los IDs de carta y los dibuja. Todo pasa en tu navegador: no te pueden detectar.</p>
 
   <div class="box">
     <h2>Opción A · Marcador — <b>sin instalar nada</b></h2>
     <ol>
       <li>Mostrá la barra de marcadores con <code>Ctrl + Shift + B</code>.</li>
       <li>Arrastrá este botón a la barra: <a class="bm" id="bm" href="#">🃏 Ver cartas</a></li>
-      <li>Entrá a <code>trucox.com</code>, metete en una partida, y hacé clic en el marcador.</li>
+      <li>Entrá a <code>www.trucox.com</code>, metete en una partida, y hacé clic en el marcador.</li>
     </ol>
     <button id="copy">Copiar el marcador</button>
-    <div class="note">Si el arrastre no te funciona, copiá el marcador y pegalo a mano en la barra.
-    También podés pegar el código de la Opción C en la consola (F12) para probar.</div>
   </div>
 
   <div class="box">
     <h2>Opción B · Tampermonkey — <b>se activa solo</b></h2>
     <ol>
       <li>Instalá la extensión Tampermonkey.</li>
-      <li>Descargá el <code>.user.js</code> con el botón de abajo y arrastralo a la ventana de Tampermonkey
-      (o abrí el archivo descargado y te va a ofrecer instalarlo).</li>
+      <li>Descargá el <code>.user.js</code> y arrastralo a la ventana de Tampermonkey.</li>
       <li>Listo: el menú aparece solo cada vez que entres a trucox.com.</li>
     </ol>
     <button id="dl">Descargar el .user.js</button>
@@ -83,21 +80,24 @@ code{background:#1a2334;padding:1px 5px;border-radius:5px;font-size:13px}
 
   /* ---------- estado ---------- */
   var S = {
-    rival: null, mine: null, table: null, hands: [], dom: [],
+    rival: null, mine: null, table: null, cands: [], rawArrays: [],
+    domMine: [], domTable: [], dom: [],
     msgs: 0, dbg: false, auto: false, last: null,
     rivalPath: lsg('rivalPath') || null,
     minePath: lsg('minePath') || null
   };
+  var calibIdx = parseInt(lsg('calib'), 10);
+  if (isNaN(calibIdx)) calibIdx = -1;
   var LOGS = [];
   function push(s) { LOGS.push(s); if (LOGS.length > 300) LOGS.splice(0, LOGS.length - 300); }
 
   /* ---------- lectura de cartas ---------- */
   var SUIT = {
-    e: { sym: '\u2694',      name: 'espada' },
-    b: { sym: '\u{1F33F}',   name: 'basto'  },
-    o: { sym: '\u{1FA99}',   name: 'oro'    },
-    c: { sym: '\u{1F377}',   name: 'copa'   },
-    x: { sym: '\u00B7',      name: '?'      }
+    e: { sym: '\u2694',    name: 'espada' },
+    b: { sym: '\u{1F33F}', name: 'basto'  },
+    o: { sym: '\u{1FA99}', name: 'oro'    },
+    c: { sym: '\u{1F377}', name: 'copa'   },
+    x: { sym: '\u00B7',    name: '?'      }
   };
   var ALIAS = {
     esp:'e', espada:'e', espadas:'e', sword:'e', swords:'e', spade:'e', spades:'e',
@@ -113,7 +113,6 @@ code{background:#1a2334;padding:1px 5px;border-radius:5px;font-size:13px}
     if (/^[eobc]$/.test(s)) return s;
     if (ALIAS[s]) return ALIAS[s];
     if (s.length > 1 && /s$/.test(s) && ALIAS[s.slice(0, -1)]) return ALIAS[s.slice(0, -1)];
-    if (/^[0-4]$/.test(s)) return 'ebocc'.charAt(+s);
     return null;
   }
   function rankOf(v) {
@@ -143,7 +142,7 @@ code{background:#1a2334;padding:1px 5px;border-radius:5px;font-size:13px}
   function card(v) {
     if (v == null) return null;
     if (typeof v === 'string') return loose(v);
-    if (typeof v === 'number') return (v >= 1 && v <= 12) ? { n: v, s: 'x' } : null;
+    if (typeof v === 'number') return null;
     if (typeof v !== 'object' || Array.isArray(v)) return null;
     var ks = Object.keys(v), i, k, t;
     if (!ks.length || ks.length > 10) return null;
@@ -157,169 +156,214 @@ code{background:#1a2334;padding:1px 5px;border-radius:5px;font-size:13px}
         t = suitOf(v[ks[i]]); if (t) s = t;
       }
     }
-    if (n != null) return { n: n, s: s || 'x' };
+    if (n != null && s != null) return { n: n, s: s };
     for (i = 0; i < ks.length; i++) { t = typeof v[ks[i]] === 'string' ? loose(v[ks[i]]) : null; if (t) return t; }
     return null;
   }
 
-  /* ---------- recorrido de objetos ---------- */
-  function walk(root, cb) {
+  /* ---------- decodificador de IDs numéricos (calibrado) ---------- */
+  var RANKS10 = [1, 2, 3, 4, 5, 6, 7, 10, 11, 12];
+  var ORDERS = [
+    ['e', 'b', 'o', 'c'], ['o', 'c', 'e', 'b'], ['c', 'o', 'b', 'e'], ['b', 'e', 'c', 'o'],
+    ['e', 'o', 'b', 'c'], ['b', 'o', 'c', 'e'], ['c', 'b', 'o', 'e'], ['o', 'e', 'c', 'b']
+  ];
+  var DECODERS = [];
+  (function () {
+    ORDERS.forEach(function (ord) {
+      DECODERS.push(function (id) { var s = Math.floor(id / 10), r = id % 10; if (s > 3) return null; return { s: ord[s], n: RANKS10[r] }; });
+      DECODERS.push(function (id) { var r = Math.floor(id / 4), s = id % 4; if (r > 9) return null; return { s: ord[s], n: RANKS10[r] }; });
+      DECODERS.push(function (id) { var x = id - 1; if (x < 0) return null; var s = Math.floor(x / 10), r = x % 10; if (s > 3) return null; return { s: ord[s], n: RANKS10[r] }; });
+      DECODERS.push(function (id) { var x = id - 1; if (x < 0) return null; var r = Math.floor(x / 4), s = x % 4; if (r > 9) return null; return { s: ord[s], n: RANKS10[r] }; });
+    });
+  })();
+  function decodeId(id) {
+    if (calibIdx < 0 || typeof id !== 'number') return null;
+    var c = DECODERS[calibIdx](id);
+    return (c && c.s && c.n) ? c : null;
+  }
+  function isInt(x) { return typeof x === 'number' && x === Math.floor(x) && x >= 0 && x <= 200; }
+  function keyOf(c) { return c.n + '-' + c.s; }
+  function sameSet(a, b) {
+    if (a.length !== b.length) return false;
+    return a.map(keyOf).sort().join(',') === b.map(keyOf).sort().join(',');
+  }
+
+  function calibrate() {
+    if (calibIdx >= 0) return true;
+    var mine = S.domMine;
+    if (!mine || mine.length < 2) return false;
+    var arrays = S.rawArrays.filter(function (a) { return a.length === mine.length && a.every(isInt); });
+    for (var i = 0; i < arrays.length; i++) {
+      for (var d = 0; d < DECODERS.length; d++) {
+        var out = [], ok = true;
+        for (var j = 0; j < arrays[i].length; j++) {
+          var c = DECODERS[d](arrays[i][j]);
+          if (!c) { ok = false; break; }
+          out.push(c);
+        }
+        if (ok && sameSet(out, mine)) {
+          calibIdx = d; lss('calib', String(d));
+          push('!! calibrado decoder #' + d);
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /* ---------- utilidades de estructura ---------- */
+  function isLeaf(x) {
+    if (x == null) return false;
+    var t = typeof x;
+    if (t === 'string') return x.length > 0 && x.length <= 24;
+    if (t === 'number') return x >= 0 && x <= 200;
+    if (t === 'object' && !Array.isArray(x)) return Object.keys(x).length <= 8;
+    return false;
+  }
+  function collectArrays(node, cb) {
     var seen = new WeakSet();
     (function go(o, path, d) {
-      if (!o || typeof o !== 'object' || d > 9 || seen.has(o)) return;
+      if (!o || typeof o !== 'object' || d > 10 || seen.has(o)) return;
       seen.add(o);
       if (Array.isArray(o)) {
-        if (o.length && o.length <= 6) {
-          var cs = [], ok = true, i;
-          for (i = 0; i < o.length; i++) { var c = card(o[i]); if (!c) { ok = false; break; } cs.push(c); }
-          if (ok) cb(cs, path);
-        }
-        for (i = 0; i < o.length; i++) go(o[i], path + '[' + i + ']', d + 1);
+        if (o.length >= 1 && o.length <= 6 && o.every(isLeaf)) cb(o, path);
+        for (var i = 0; i < o.length; i++) go(o[i], path + '[' + i + ']', d + 1);
         return;
       }
       for (var k in o) { var v; try { v = o[k]; } catch (e) { continue; } go(v, path ? path + '.' + k : k, d + 1); }
-    })(root, '', 0);
+    })(node, '', 0);
   }
-  function walkObj(root, cb) {
-    var seen = new WeakSet();
-    (function go(o, d) {
-      if (!o || typeof o !== 'object' || d > 8 || seen.has(o)) return;
-      seen.add(o);
-      if (!Array.isArray(o)) cb(o, d);
-      for (var k in o) { var v; try { v = o[k]; } catch (e) { continue; } go(v, d + 1); }
-    })(root, 0);
-  }
-  function handOf(p) {
-    var best = null;
-    walk(p, function (cs) { if (!best || (cs.length === 3 && best.length !== 3)) best = cs; });
-    return best;
-  }
-
-  /* ---------- detección del rival ---------- */
-  var RX_RIVAL = /(rival|advers|opponent|oponent|enem|other|otro|contra|j2|p2|player2|jugador2|slot2|seat2|top)/i;
-  var RX_MINE  = /(mine|my|mis|self|own|propi|yo|me|j1|p1|player1|jugador1|slot1|seat1|mano|hand|bottom)/i;
-
-  function rivalFromPlayers(root) {
-    var arr = null;
-    walkObj(root, function (o) {
-      if (arr) return;
-      for (var k in o) {
-        var lk = k.toLowerCase();
-        if (!arr && Array.isArray(o[k]) && o[k].length >= 2 && o[k].length <= 8 &&
-            /^(players|jugadores|seats|asientos|participants|jugadoreslist|playerlist|mesa|table)$/.test(lk) &&
-            o[k].every(function (x) { return x && typeof x === 'object'; })) { arr = o[k]; }
-      }
-    });
-    if (!arr) return null;
-    var i, p, k;
-    for (i = 0; i < arr.length; i++) {
-      p = arr[i];
-      for (k in p) {
-        if (/^(isme|isyou|self|isowner|esyo|mio|iscurrent|islocal|isplayer)$/i.test(k) && p[k] === true) {
-          return arr.filter(function (x) { return x !== p; })[0] || null;
-        }
-      }
+  function numField(o) {
+    for (var k in o) {
+      if (/^(carta|card|id|cid|code|v|n|num|numero|valor|value|idx|index|slot)$/i.test(k) && isInt(o[k])) return o[k];
     }
-    var myId = null, d0 = 99;
-    walkObj(root, function (o, d) {
-      if (d > 3) return;
-      for (var k2 in o) {
-        var lk2 = k2.toLowerCase();
-        if (/^(myid|my_id|selfid|self_id|playerid|player_id|userid|user_id|uid|myname)$/.test(lk2) &&
-            typeof o[k2] !== 'object' && o[k2] != null && d < d0) { myId = o[k2]; d0 = d; }
-      }
-    });
-    if (myId == null) return null;
-    function idOf(x) {
-      for (var k3 in x) {
-        if (/^(id|playerid|player_id|userid|user_id|uid|pid|socketid|socket_id|slot|seat)$/.test(k3.toLowerCase())) return x[k3];
-      }
-      return null;
-    }
-    var mine = null;
-    for (i = 0; i < arr.length; i++) if (String(idOf(arr[i])) === String(myId)) { mine = arr[i]; break; }
-    if (!mine) return null;
-    return arr.filter(function (x) { return x !== mine; })[0] || null;
-  }
-
-  function find(hands, path) {
-    for (var i = 0; i < hands.length; i++) if (hands[i].path === path) return hands[i];
     return null;
   }
-
-  /* ---------- análisis ---------- */
-  function analyze(root) {
-    if (!root || typeof root !== 'object') return;
-    S.last = root;
-    var hands = [];
-    walk(root, function (cs, path) { hands.push({ cards: cs, path: path || '(raiz)' }); });
-    if (!hands.length) return;
-    S.hands = hands;
-    S.msgs++;
-
-    var rival = null, mine = null, table = null, i;
-
-    if (S.rivalPath) rival = find(hands, S.rivalPath);
-    if (S.minePath) mine = find(hands, S.minePath);
-
-    if (!rival) {
-      var rp = rivalFromPlayers(root);
-      if (rp) { var h = handOf(rp); if (h) rival = { cards: h, path: 'jugadores · rival' }; }
-    }
-    if (!rival) {
-      var best = 0, cand = null;
-      for (i = 0; i < hands.length; i++) {
-        var sc = 0;
-        if (RX_RIVAL.test(hands[i].path)) sc += 10;
-        if (RX_MINE.test(hands[i].path)) sc -= 7;
-        if (hands[i].cards.length === 3) sc += 2;
-        if (sc > best) { best = sc; cand = hands[i]; }
+  function cardsOf(arr) {
+    var out = [], i, c;
+    for (i = 0; i < arr.length; i++) {
+      c = card(arr[i]);
+      if (!c && isInt(arr[i])) c = decodeId(arr[i]);
+      if (!c && arr[i] && typeof arr[i] === 'object') {
+        var v = numField(arr[i]);
+        if (v != null) c = decodeId(v);
       }
-      if (cand && best > 0) rival = cand;
-      else {
-        var threes = hands.filter(function (x) { return x.cards.length === 3; });
-        if (threes.length === 2) {
-          rival = threes.filter(function (x) { return !RX_MINE.test(x.path); })[0] || null;
-        }
-      }
+      if (!c) return null;
+      out.push(c);
     }
-    if (!mine) mine = hands.filter(function (x) { return RX_MINE.test(x.path) && x.cards.length <= 3; })[0] || null;
-    table = hands.filter(function (x) {
-      return /(mesa|table|jugad|played|pozo|centro|board|campo|descart|trick)/i.test(x.path);
-    })[0] || null;
-
-    if (rival && rival.cards.length) S.rival = rival;
-    if (mine) S.mine = mine;
-    if (table) S.table = table;
-
-    if (!S.auto && S.rival && S.rival.cards && S.rival.cards.length === 3) { S.auto = true; open(true); }
-    render();
+    return out;
   }
 
-  /* ---------- barrido del DOM (respaldo) ---------- */
+  /* ---------- respaldo DOM ---------- */
+  function uniqCards(list) {
+    var seen = [], out = [];
+    for (var i = 0; i < list.length; i++) {
+      var k = keyOf(list[i]);
+      if (seen.indexOf(k) < 0) { seen.push(k); out.push(list[i]); }
+    }
+    return out;
+  }
   function domScan() {
-    var out = [], els = D.querySelectorAll('img,[title],[aria-label],[alt]'), i, el, r, raw, c;
-    for (i = 0; i < els.length && out.length < 80; i++) {
+    var els = D.querySelectorAll('img,[title],[aria-label],[alt]');
+    var H = W.innerHeight, found = [], seen = [], i, a, v, el, r, raw, c;
+    for (i = 0; i < els.length && found.length < 150; i++) {
       el = els[i];
       if (!el.getBoundingClientRect) continue;
       r = el.getBoundingClientRect();
-      if (r.width < 18 || r.height < 18) continue;
+      if (r.width < 16 || r.height < 16) continue;
       raw = '';
       var attrs = ['src', 'title', 'aria-label', 'alt'];
-      for (var a = 0; a < attrs.length; a++) {
-        var v = el.getAttribute && el.getAttribute(attrs[a]);
+      for (a = 0; a < attrs.length; a++) {
+        v = el.getAttribute && el.getAttribute(attrs[a]);
         if (v) raw += ' ' + v;
       }
       if (!raw) continue;
       c = loose(raw);
       if (!c) continue;
-      out.push({ c: c, y: r.top < W.innerHeight * 0.55 });
+      var k = keyOf(c) + '@' + Math.round(r.left) + ',' + Math.round(r.top);
+      if (seen.indexOf(k) >= 0) continue;
+      seen.push(k);
+      found.push({ c: c, mid: r.top + r.height / 2 });
     }
-    return out;
+    var mine = [], table = [];
+    for (i = 0; i < found.length; i++) {
+      if (found[i].mid > H * 0.62) mine.push(found[i].c);
+      else if (found[i].mid > H * 0.26) table.push(found[i].c);
+    }
+    return { mine: uniqCards(mine).slice(0, 5), table: uniqCards(table).slice(0, 6), all: found };
   }
-  function scanGlobals() {
-    var keys = ['__NEXT_DATA__', '__INITIAL_STATE__', '__APP_STATE__', 'store', 'game', 'gameState', 'app', 'truco'];
-    for (var i = 0; i < keys.length; i++) { try { if (W[keys[i]]) analyze(W[keys[i]]); } catch (e) {} }
+
+  /* ---------- clasificación ---------- */
+  var RX_TABLE = /(mesa|table|jugad|played|pozo|centro|trick|descart|cartasjugadas|cartaenmesa|board|campo|tir)/i;
+  var RX_RIVAL = /(rival|oponent|opponent|enem|other|otro|contra|j2|p2|player2|jugador2|slot2|seat2|top|sup|arriba|ellos)/i;
+  var RX_MINE  = /(mine|my|mis|self|own|propi|yo|me|p1|player1|j1|slot1|seat1|mano|hand|bottom|abajo|nos)/i;
+
+  function find(cands, path) {
+    for (var i = 0; i < cands.length; i++) if (cands[i].path === path) return cands[i];
+    return null;
+  }
+
+  function analyze(node) {
+    if (!node || typeof node !== 'object') return;
+    S.last = node;
+    var raws = [];
+    collectArrays(node, function (arr, path) { raws.push({ raw: arr, path: path || '(raiz)' }); });
+    if (!raws.length) return;
+    S.rawArrays = raws.map(function (x) { return x.raw; });
+    S.msgs++;
+
+    calibrate();
+
+    var cands = [];
+    raws.forEach(function (r) {
+      cands.push({ raw: r.raw, path: r.path, cards: cardsOf(r.raw) || [] });
+    });
+    S.cands = cands;
+
+    var rival = null, mine = null, table = null, i;
+
+    if (S.rivalPath) rival = find(cands, S.rivalPath);
+    if (S.minePath) mine = find(cands, S.minePath);
+
+    /* mías: lo que coincida con mis cartas visibles */
+    if (!mine && S.domMine.length) {
+      for (i = 0; i < cands.length; i++) {
+        if (cands[i].cards.length && sameSet(cands[i].cards, S.domMine)) { mine = cands[i]; break; }
+      }
+    }
+
+    /* rival: mejor puntaje, penalizando la mesa y lo que es mío */
+    if (!rival) {
+      var best = -99, cand = null;
+      for (i = 0; i < cands.length; i++) {
+        var c = cands[i];
+        if (!c.cards.length) continue;
+        if (mine && c.path === mine.path) continue;
+        var sc = 0;
+        if (RX_TABLE.test(c.path)) sc -= 9;
+        if (RX_RIVAL.test(c.path)) sc += 10;
+        if (RX_MINE.test(c.path)) sc -= 5;
+        if (c.cards.length === 3) sc += 4;
+        if (c.cards.length === 6) sc += 1;
+        if (sc > best) { best = sc; cand = c; }
+      }
+      if (cand && best > 0) rival = cand;
+    }
+
+    /* mesa */
+    for (i = 0; i < cands.length; i++) {
+      if (RX_TABLE.test(cands[i].path) && cands[i].cards.length) { table = cands[i]; break; }
+    }
+
+    if (rival && rival.cards.length) S.rival = rival;
+    if (mine && mine.cards.length) S.mine = mine;
+    if (table && table.cards.length) S.table = table;
+    else if (!S.table && S.domTable.length) S.table = { cards: S.domTable, path: 'DOM mesa' };
+
+    if (!S.mine && S.domMine.length) S.mine = { cards: S.domMine, path: 'DOM abajo' };
+
+    if (!S.auto && S.rival && S.rival.cards && S.rival.cards.length === 3) { S.auto = true; open(true); }
+    render();
   }
 
   /* ---------- interfaz ---------- */
@@ -336,7 +380,7 @@ code{background:#1a2334;padding:1px 5px;border-radius:5px;font-size:13px}
     '.dot{width:7px;height:7px;border-radius:50%;background:#f59e0b;box-shadow:0 0 9px #f59e0b;flex:0 0 auto}',
     '.pill.on .dot{background:#22c55e;box-shadow:0 0 9px #22c55e}',
     '.st{font-weight:500;color:#8595b5;font-size:10px}',
-    '.panel{display:none;margin-top:8px;width:298px;background:rgba(13,18,28,.96);',
+    '.panel{display:none;margin-top:8px;width:296px;background:rgba(13,18,28,.97);',
     'border:1px solid #303c55;border-radius:14px;box-shadow:0 18px 50px rgba(0,0,0,.8);overflow:hidden}',
     '.wrap.open .panel{display:block}',
     '.hd{display:flex;align-items:center;gap:6px;padding:8px 10px;background:#161e2d;cursor:move;user-select:none}',
@@ -344,7 +388,7 @@ code{background:#1a2334;padding:1px 5px;border-radius:5px;font-size:13px}
     '.hd button{all:unset;cursor:pointer;width:22px;height:22px;line-height:22px;text-align:center;',
     'border-radius:7px;color:#93a2c0;font-size:13px}',
     '.hd button:hover{background:#27324a;color:#fff}',
-    '.bd{padding:10px;max-height:62vh;overflow:auto}',
+    '.bd{padding:10px;max-height:60vh;overflow:auto}',
     '.lb{display:flex;justify-content:space-between;font-size:9px;text-transform:uppercase;',
     'letter-spacing:.14em;color:#7b8aab;margin:9px 0 5px}',
     '.lb span{color:#465573;text-transform:none;letter-spacing:0}',
@@ -361,18 +405,23 @@ code{background:#1a2334;padding:1px 5px;border-radius:5px;font-size:13px}
     '.s-o .n,.s-o .sym{color:#b45309}',
     '.s-c .n,.s-c .sym{color:#b91c1c}',
     '.list{margin-top:2px}',
-    '.it{display:flex;gap:8px;align-items:center;padding:4px 6px;border-radius:7px;cursor:pointer;border:1px solid transparent}',
+    '.it{display:flex;gap:6px;align-items:center;padding:3px 5px;border-radius:7px;border:1px solid transparent}',
     '.it:hover{background:#18202f}',
     '.it.sel{background:rgba(37,99,235,.22);border-color:rgba(59,130,246,.5)}',
     '.it .p{flex:1;min-width:0;font:10px/1.3 ui-monospace,Menlo,monospace;color:#8b9ab8;',
     'overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
     '.it .m{font:10px/1.3 ui-monospace,Menlo,monospace;color:#cfd9ea;letter-spacing:.06em;white-space:nowrap}',
+    '.it .bt{all:unset;cursor:pointer;width:16px;height:16px;line-height:16px;text-align:center;',
+    'border-radius:4px;background:#243148;color:#cfe0ff;font:9px/16px ui-monospace,monospace;font-weight:700}',
+    '.it .bt:hover{background:#3b82f6;color:#fff}',
+    '.hint{font-size:10.5px;color:#f0b46a;background:rgba(240,180,106,.1);border:1px solid rgba(240,180,106,.3);',
+    'border-radius:8px;padding:7px;margin-top:8px;line-height:1.45}',
     'pre{margin:9px 0 0;padding:8px;background:#060a11;border:1px solid #1d2536;border-radius:8px;',
-    'font:10px/1.45 ui-monospace,Menlo,monospace;color:#7dd3fc;max-height:180px;overflow:auto;',
+    'font:10px/1.45 ui-monospace,Menlo,monospace;color:#7dd3fc;max-height:170px;overflow:auto;',
     'white-space:pre-wrap;word-break:break-all}',
-    '.ft{display:flex;gap:7px;padding:8px 10px;border-top:1px solid #212a3d;background:#0a0f18}',
-    '.ft button{all:unset;flex:1;text-align:center;padding:7px;border-radius:8px;background:#1a2334;',
-    'color:#c8d3e6;font-size:11px;font-weight:700;cursor:pointer}',
+    '.ft{display:flex;gap:6px;padding:8px 10px;border-top:1px solid #212a3d;background:#0a0f18}',
+    '.ft button{all:unset;flex:1;text-align:center;padding:7px 4px;border-radius:8px;background:#1a2334;',
+    'color:#c8d3e6;font-size:10.5px;font-weight:700;cursor:pointer}',
     '.ft button:hover{background:#243148}'
   ].join('');
 
@@ -381,7 +430,7 @@ code{background:#1a2334;padding:1px 5px;border-radius:5px;font-size:13px}
       '<div class="pill" id="pill"><span class="dot"></span><span>Ver cartas</span>' +
       '<span class="st" id="st">esperando</span></div>' +
       '<div class="panel">' +
-        '<div class="hd" id="hd"><b>Cartas del rival</b>' +
+        '<div class="hd" id="hd"><b>Mano del rival</b>' +
         '<button id="dbg" title="Ver trafico">=</button><button id="cls" title="Cerrar">x</button></div>' +
         '<div class="bd">' +
           '<div class="lb">Rival <span id="rpath"></span></div>' +
@@ -390,20 +439,22 @@ code{background:#1a2334;padding:1px 5px;border-radius:5px;font-size:13px}
           '<div class="row" id="mine"></div>' +
           '<div class="lb">Mesa</div>' +
           '<div class="row" id="table"></div>' +
-          '<div class="lb">Detectado <span>clic = fijar</span></div>' +
+          '<div class="lb">Detectado <span>R = rival · M = mias</span></div>' +
           '<div class="list" id="list"></div>' +
+          '<div id="hint"></div>' +
           '<pre id="log" hidden></pre>' +
         '</div>' +
-        '<div class="ft"><button id="rescan">Reescanear</button><button id="reset">Reset</button></div>' +
+        '<div class="ft"><button id="rescan">Reescanear</button>' +
+        '<button id="diag">Diagnostico</button><button id="reset">Reset</button></div>' +
       '</div>' +
     '</div>';
 
   var host = D.createElement('div');
   host.style.cssText = 'all:initial';
   (D.body || D.documentElement).appendChild(host);
-  var root = host.attachShadow({ mode: 'open' });
-  root.innerHTML = '<style>' + CSS + '</style>' + HTML;
-  function q(s) { return root.querySelector(s); }
+  var SR = host.attachShadow({ mode: 'open' });
+  SR.innerHTML = '<style>' + CSS + '</style>' + HTML;
+  function q(s) { return SR.querySelector(s); }
 
   var wrap = q('#wrap');
   function open(v) { if (v) wrap.classList.add('open'); else wrap.classList.remove('open'); }
@@ -412,9 +463,10 @@ code{background:#1a2334;padding:1px 5px;border-radius:5px;font-size:13px}
   function paint(el, cards) {
     if (!el) return;
     el.textContent = '';
-    if (!cards || !cards.length) { for (var i = 0; i < 3; i++) el.appendChild(back()); return; }
-    for (var j = 0; j < cards.length; j++) {
-      var c = cards[j], d = D.createElement('div');
+    var i;
+    if (!cards || !cards.length) { for (i = 0; i < 3; i++) el.appendChild(back()); return; }
+    for (i = 0; i < cards.length; i++) {
+      var c = cards[i], d = D.createElement('div');
       d.className = 'card s-' + c.s;
       d.title = c.n + ' de ' + (SUIT[c.s] ? SUIT[c.s].name : '?');
       d.innerHTML = '<span class="n">' + c.n + '</span><span class="sym">' +
@@ -424,16 +476,33 @@ code{background:#1a2334;padding:1px 5px;border-radius:5px;font-size:13px}
   }
   function back() { var d = D.createElement('div'); d.className = 'card back'; d.textContent = '?'; return d; }
 
-  function row(cards, label, sel, hand) {
+  function row(cand, sel) {
     var it = D.createElement('div');
     it.className = 'it' + (sel ? ' sel' : '');
-    var pEl = D.createElement('div'); pEl.className = 'p'; pEl.textContent = label; pEl.title = label;
+    var pEl = D.createElement('div'); pEl.className = 'p';
+    pEl.textContent = cand.path; pEl.title = cand.path;
     var mEl = D.createElement('div'); mEl.className = 'm';
-    var txt = [];
-    for (var i = 0; i < (cards || []).length; i++) txt.push(cards[i].n + cards[i].s.toUpperCase());
-    mEl.textContent = txt.join(' ');
+    if (cand.cards.length) {
+      var t = [];
+      for (var i = 0; i < cand.cards.length; i++) t.push(cand.cards[i].n + cand.cards[i].s.toUpperCase());
+      mEl.textContent = t.join(' ');
+    } else {
+      mEl.textContent = '#' + cand.raw.join(' #');
+    }
     it.appendChild(pEl); it.appendChild(mEl);
-    if (hand) it.onclick = function () { S.rivalPath = hand.path; S.rival = hand; lss('rivalPath', hand.path); render(); };
+
+    var bR = D.createElement('b'); bR.className = 'bt'; bR.textContent = 'R'; bR.title = 'Usar como rival';
+    bR.onclick = function (e) {
+      if (e && e.stopPropagation) e.stopPropagation();
+      S.rivalPath = cand.path; S.rival = cand; lss('rivalPath', cand.path); render();
+    };
+    var bM = D.createElement('b'); bM.className = 'bt'; bM.textContent = 'M'; bM.title = 'Usar como mias';
+    bM.onclick = function (e) {
+      if (e && e.stopPropagation) e.stopPropagation();
+      S.minePath = cand.path; S.mine = cand; lss('minePath', cand.path); render();
+    };
+    it.appendChild(bR); it.appendChild(bM);
+    it.onclick = function () { bR.onclick(); };
     return it;
   }
 
@@ -446,13 +515,23 @@ code{background:#1a2334;padding:1px 5px;border-radius:5px;font-size:13px}
     paint(q('#table'), S.table && S.table.cards);
     q('#rpath').textContent = S.rival ? S.rival.path : '';
 
-    var list = q('#list'); list.textContent = '';
-    for (var i = 0; i < S.dom.length && i < 6; i++) {
-      list.appendChild(row([S.dom[i].c], 'DOM ' + (S.dom[i].y ? '· arriba' : '· abajo'), false, null));
+    var list = q('#list'), i;
+    list.textContent = '';
+    for (i = 0; i < S.cands.length && i < 14; i++) {
+      var c = S.cands[i];
+      if (!c.cards.length && !c.raw.length) continue;
+      list.appendChild(row(c, !!(S.rival && c.path === S.rival.path)));
     }
-    for (var j = 0; j < S.hands.length && j < 12; j++) {
-      var h = S.hands[j];
-      list.appendChild(row(h.cards, h.path, !!(S.rival && h.path === S.rival.path), h));
+
+    var hint = q('#hint');
+    if (!S.rival || !S.rival.cards.length) {
+      hint.innerHTML = '<div class="hint">No encontre la mano del rival. Toca <b>=</b> y despues ' +
+        '<b>Diagnostico</b> y pasame el texto, o proba tocar la <b>R</b> en la fila correcta.</div>';
+    } else if (calibIdx < 0) {
+      hint.innerHTML = '<div class="hint">Cartas leidas como texto. Si el rival aparece mal, ' +
+        'toca la <b>R</b> en la fila correcta.</div>';
+    } else {
+      hint.textContent = '';
     }
 
     var st = q('#st'), pill = q('#pill');
@@ -466,227 +545,50 @@ code{background:#1a2334;padding:1px 5px;border-radius:5px;font-size:13px}
     if (S.dbg) paintLog();
   }
 
+  function copyText(txt) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(txt); return; }
+    } catch (e) {}
+    try {
+      var ta = D.createElement('textarea');
+      ta.value = txt; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      D.body.appendChild(ta); ta.select(); D.execCommand('copy'); D.body.removeChild(ta);
+    } catch (e) {}
+  }
+
   /* ---------- eventos ---------- */
-  q('#pill').onclick = function () { toggle(); };
+  var moved = false;
+
+  q('#pill').onclick = function () { if (moved) { moved = false; return; } toggle(); };
   q('#cls').onclick = function () { open(false); };
   q('#dbg').onclick = function () { S.dbg = !S.dbg; q('#log').hidden = !S.dbg; if (S.dbg) paintLog(); };
-  q('#rescan').onclick = function () { try { if (S.last) analyze(S.last); scanGlobals(); } catch (e) {} render(); };
+  q('#rescan').onclick = function () {
+    try { S.dom = domScan(); S.domMine = S.dom.mine; S.domTable = S.dom.table; } catch (e) {}
+    try { calibrate(); } catch (e) {}
+    try { if (S.last) analyze(S.last); } catch (e) {}
+    render();
+  };
   q('#reset').onclick = function () {
     S.rivalPath = null; S.minePath = null; lss('rivalPath', null); lss('minePath', null);
+    calibIdx = -1; lss('calib', null);
     S.rival = null; S.auto = false; render();
+  };
+  q('#diag').onclick = function () {
+    var d = {
+      version: '1.2.0',
+      url: location.href,
+      calib: calibIdx,
+      domMine: S.domMine, domTable: S.domTable,
+      rivalPath: S.rivalPath, minePath: S.minePath,
+      arrays: S.rawArrays.slice(0, 40),
+      candidatos: S.cands.slice(0, 40).map(function (c) { return { p: c.path, raw: c.raw, cards: c.cards }; }),
+      logs: LOGS.slice(-60)
+    };
+    copyText(JSON.stringify(d, null, 1));
+    var b = q('#diag'), o = b.textContent;
+    b.textContent = 'Copiado';
+    setTimeout(function () { b.textContent = o; }, 1400);
   };
   D.addEventListener('keydown', function (e) {
     var t = e.target || {};
-    if (/input|textarea|select/i.test(t.tagName || '') || t.isContentEditable) return;
-    if (e.key === 'v' || e.key === 'V') toggle();
-  });
-  function onDown(e) {
-    var tg = e.target;
-    if (tg && tg.closest && tg.closest('button')) return;
-    var r = wrap.getBoundingClientRect();
-    var ox = e.clientX - r.left, oy = e.clientY - r.top;
-    function mv(ev) {
-      wrap.style.left = Math.max(0, Math.min(W.innerWidth - 40, ev.clientX - ox)) + 'px';
-      wrap.style.top = Math.max(0, Math.min(W.innerHeight - 40, ev.clientY - oy)) + 'px';
-      wrap.style.right = 'auto';
-    }
-    function up() { D.removeEventListener('pointermove', mv); D.removeEventListener('pointerup', up); }
-    D.addEventListener('pointermove', mv); D.addEventListener('pointerup', up);
-    e.preventDefault();
-  }
-  q('#pill').addEventListener('pointerdown', onDown);
-  q('#hd').addEventListener('pointerdown', onDown);
-
-  /* ---------- espías del tráfico ---------- */
-  var _parse = JSON.parse;
-  function tryParse(t) {
-    if (typeof t !== 'string' || t.length < 4 || t.length > 400000) return null;
-    try { return _parse.call(JSON, t); } catch (e) { return null; }
-  }
-  function feed(tag, raw) {
-    if (typeof raw !== 'string') return;
-    push(tag + ' ' + raw.slice(0, 700));
-    var o = tryParse(raw);
-    if (o) analyze(o);
-  }
-
-  JSON.parse = function (txt, rev) {
-    var out = _parse.call(this, txt, rev);
-    try {
-      if (typeof txt === 'string' && txt.length > 3 &&
-          (txt.charCodeAt(0) === 123 || txt.charCodeAt(0) === 91)) {
-        push('<< ' + txt.slice(0, 700));
-        analyze(out);
-      }
-    } catch (e) {}
-    return out;
-  };
-
-  var WS = W.WebSocket;
-  if (WS && WS.prototype) {
-    var _send = WS.prototype.send;
-    WS.prototype.send = function (d) {
-      try { if (typeof d === 'string') feed('>>', d); } catch (e) {}
-      return _send.apply(this, arguments);
-    };
-    var _add = WS.prototype.addEventListener, _rem = WS.prototype.removeEventListener;
-    WS.prototype.addEventListener = function (t, fn, o) {
-      if (t === 'message' && typeof fn === 'function' && !fn.__tcx) {
-        var w = function (ev) { try { feed('<<', String(ev.data)); } catch (e) {} return fn.apply(this, arguments); };
-        w.__tcx = fn;
-        return _add.call(this, t, w, o);
-      }
-      return _add.apply(this, arguments);
-    };
-    WS.prototype.removeEventListener = function (t, fn, o) {
-      return _rem.call(this, t, (t === 'message' && fn && fn.__tcx) ? fn.__tcx : fn, o);
-    };
-    var dsc = Object.getOwnPropertyDescriptor(WS.prototype, 'onmessage');
-    if (dsc && dsc.set) {
-      Object.defineProperty(WS.prototype, 'onmessage', {
-        configurable: true, enumerable: !!dsc.enumerable,
-        get: function () { return dsc.get.call(this); },
-        set: function (fn) {
-          if (typeof fn !== 'function' || fn.__tcx) return dsc.set.call(this, fn);
-          var w = function (ev) { try { feed('<<', String(ev.data)); } catch (e) {} return fn.apply(this, arguments); };
-          w.__tcx = fn;
-          dsc.set.call(this, w);
-        }
-      });
-    }
-  }
-
-  var _fetch = W.fetch;
-  if (_fetch) {
-    W.fetch = function () {
-      var a = arguments, url = '';
-      try {
-        url = typeof a[0] === 'string' ? a[0] : (a[0] && a[0].url) || '';
-        if (a[1] && typeof a[1].body === 'string') feed('>>f', a[1].body);
-      } catch (e) {}
-      var pr = _fetch.apply(this, a);
-      try {
-        pr.then(function (r) {
-          try {
-            var ct = (r.headers && r.headers.get('content-type')) || '';
-            if (/json/i.test(ct) || /api|socket|game|play|match|truco|mesa|partida|state/i.test(url)) {
-              r.clone().text().then(function (t) { feed('<<f', t); }).catch(function () {});
-            }
-          } catch (e) {}
-        });
-      } catch (e) {}
-      return pr;
-    };
-  }
-
-  var XO = W.XMLHttpRequest;
-  if (XO && XO.prototype) {
-    var _xopen = XO.prototype.open, _xsend = XO.prototype.send;
-    XO.prototype.open = function (m, u) { try { this.__tcxu = u; } catch (e) {} return _xopen.apply(this, arguments); };
-    XO.prototype.send = function (b) {
-      var self = this;
-      try { if (typeof b === 'string') feed('>>x', b); } catch (e) {}
-      try {
-        this.addEventListener('load', function () {
-          try {
-            if (self.responseType === '' || self.responseType === 'text') {
-              if (self.responseText) feed('<<x', self.responseText);
-            } else if (self.response && typeof self.response === 'object') analyze(self.response);
-          } catch (e) {}
-        });
-      } catch (e) {}
-      return _xsend.apply(this, arguments);
-    };
-  }
-
-  var ES = W.EventSource;
-  if (ES && ES.prototype && ES.prototype.addEventListener) {
-    var _eadd = ES.prototype.addEventListener;
-    ES.prototype.addEventListener = function (t, fn, o) {
-      if (typeof fn === 'function' && !fn.__tcx) {
-        var w = function (ev) { try { feed('<<e', String(ev.data)); } catch (e) {} return fn.apply(this, arguments); };
-        w.__tcx = fn;
-        return _eadd.call(this, t, w, o);
-      }
-      return _eadd.apply(this, arguments);
-    };
-  }
-
-  /* ---------- arranque ---------- */
-  W.__TCX_VC__ = { toggle: toggle, analyze: analyze, state: S, scan: domScan, version: '1.0.0' };
-
-  try { W.dispatchEvent(new Event('resize')); } catch (e) {}
-  try { scanGlobals(); } catch (e) {}
-  render();
-
-  setInterval(function () {
-    try { if (S.last) analyze(S.last); } catch (e) {}
-    try { scanGlobals(); } catch (e) {}
-    if (!S.rival || String(S.rival.path || '').indexOf('DOM') === 0) {
-      S.dom = domScan();
-      if (S.dom.length) {
-        var up = [];
-        for (var i = 0; i < S.dom.length && up.length < 3; i++) if (S.dom[i].y) up.push(S.dom[i].c);
-        if (up.length) S.rival = { cards: up, path: 'DOM (mitad superior)' };
-      }
-      render();
-    }
-  }, 1500);
-
-  console.log('%c[TrucoX] Ver cartas listo. Atajo: tecla V', 'color:#22c55e;font-weight:bold');
-})();
-</script>
-
-<!-- ===================== LANZADOR ===================== -->
-<script>
-(function () {
-  var payload = document.getElementById('payload').textContent.trim();
-  var HEADER =
-    '// ==UserScript==\n' +
-    '// @name         Ver cartas - TrucoX\n' +
-    '// @namespace    tcx.vercartas\n' +
-    '// @version      1.0.0\n' +
-    '// @description  Menu flotante para ver las cartas del rival en trucox.com\n' +
-    '// @match        *://*.trucox.com/*\n' +
-    '// @match        *://trucox.com/*\n' +
-    '// @run-at       document-idle\n' +
-    '// @grant        none\n' +
-    '// ==/UserScript==\n\n';
-
-  var bm = 'javascript:' + encodeURIComponent(payload + '\n//# sourceURL=trucox-vercartas.js');
-
-  document.getElementById('bm').href = bm;
-  document.getElementById('raw').textContent = payload;
-
-  function fallbackCopy(txt, ok) {
-    var ta = document.createElement('textarea');
-    ta.value = txt;
-    ta.style.position = 'fixed'; ta.style.opacity = '0';
-    document.body.appendChild(ta); ta.select();
-    try { document.execCommand('copy'); ok(); } catch (e) {}
-    document.body.removeChild(ta);
-  }
-  function copy(txt, btn) {
-    var ok = function () {
-      var o = btn.textContent;
-      btn.textContent = 'Copiado';
-      setTimeout(function () { btn.textContent = o; }, 1400);
-    };
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(txt).then(ok, function () { fallbackCopy(txt, ok); });
-    } else fallbackCopy(txt, ok);
-  }
-
-  document.getElementById('copy').onclick = function () { copy(bm, this); };
-  document.getElementById('copy2').onclick = function () { copy(payload, this); };
-  document.getElementById('dl').onclick = function () {
-    var blob = new Blob([HEADER + payload], { type: 'application/javascript' });
-    var a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = 'trucox-vercartas.user.js';
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  };
-})();
-</script>
-</body>
-</html>
+    if (/input|textarea|select/i.test(t.tagName || '') || t.isContentEd
