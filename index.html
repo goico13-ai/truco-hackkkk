@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gran Truco – Ver Cartas</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:#0f172a;color:#e2e8f0;font-family:system-ui,sans-serif;min-height:100vh;padding:16px;}
+h1{font-size:1.3rem;color:#fff;margin-bottom:2px;}
+.sub{font-size:.8rem;color:#64748b;margin-bottom:14px;}
+.status-bar{display:flex;align-items:center;gap:8px;margin-bottom:14px;}
+.dot{width:10px;height:10px;border-radius:50%;background:#f97316;flex-shrink:0;}
+.dot.ok{background:#22c55e;} .dot.err{background:#ef4444;}
+.dot.pulse{animation:pulse 1s infinite;}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:.3;}}
+.stxt{font-size:.85rem;color:#94a3b8;}
+.box{background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:12px;}
+.box h2{font-size:.7rem;text-transform:uppercase;letter-spacing:.1em;color:#64748b;margin-bottom:10px;}
+.cards-row{display:flex;gap:8px;flex-wrap:wrap;min-height:60px;align-items:center;}
+.card{width:42px;height:60px;border-radius:6px;background:#fff;
+  display:flex;flex-direction:column;align-items:center;justify-content:space-between;
+  padding:4px 3px;border:1px solid #e2e8f0;}
+.card.dorso{background:repeating-linear-gradient(45deg,#1e40af,#1e40af 3px,#1e3a8a 3px,#1e3a8a 6px);border:none;}
+.card .rk{font-size:17px;font-weight:900;line-height:1;}
+.card .ss{font-size:13px;line-height:1;}
+.espada .rk,.espada .ss{color:#1e40af;}
+.basto .rk,.basto .ss{color:#15803d;}
+.oro .rk,.oro .ss{color:#b45309;}
+.copa .rk,.copa .ss{color:#b91c1c;}
+input{background:#0f172a;border:2px solid #334155;color:#e2e8f0;border-radius:8px;
+  padding:10px 14px;font-size:.9rem;width:100%;margin-bottom:10px;}
+input:focus{outline:none;border-color:#3b82f6;}
+button{background:#2563eb;color:#fff;border:none;border-radius:8px;padding:12px;
+  font-size:.9rem;font-weight:600;width:100%;cursor:pointer;margin-bottom:8px;}
+button:active{opacity:.8;}
+button.sec{background:#1e293b;border:1px solid #334155;color:#94a3b8;}
+.hint{font-size:.75rem;color:#475569;margin-bottom:6px;line-height:1.5;}
+.log{background:#0a0f1e;border-radius:6px;padding:10px;font-size:.72rem;color:#64748b;
+  max-height:120px;overflow-y:auto;margin-top:8px;}
+.log div{padding:1px 0;}
+.cand-row{display:flex;align-items:center;gap:6px;padding:5px 0;
+  border-bottom:1px solid #0f172a;font-size:.75rem;}
+.cand-path{flex:1;color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.cand-cards{color:#e2e8f0;}
+.rbtn{background:#7c3aed;border:none;color:#fff;border-radius:4px;padding:3px 8px;cursor:pointer;font-size:.72rem;}
+.mbtn{background:#0e7490;border:none;color:#fff;border-radius:4px;padding:3px 8px;cursor:pointer;font-size:.72rem;}
+#s1{display:block;} #s2{display:none;}
+.raw{background:#0a0f1e;border-radius:6px;padding:8px;font-size:.65rem;color:#475569;word-break:break-all;margin-top:8px;max-height:80px;overflow-y:auto;}
+</style>
+</head>
+<body>
+<h1>🃏 Gran Truco – Ver Cartas</h1>
+<p class="sub">Intercepta las cartas del rival via proxy</p>
+
+<div class="status-bar">
+  <span class="dot" id="dot"></span>
+  <span class="stxt" id="stxt">Esperando...</span>
+</div>
+
+<div id="s1">
+  <div class="box">
+    <h2>Configuración</h2>
+    <p class="hint">Necesitás la cookie <b>connect.sid</b> de Gran Truco. La encontrás en Spider Proxy → request a trucogame.com → Cookie de petición.</p>
+    <input id="sid" placeholder="connect.sid (s:Vq2I4TOvP...)" type="text">
+    <p class="hint">Opcional: <b>wsAuthToken</b> del request /api/auth/ws-token</p>
+    <input id="wsat" placeholder="wsAuthToken (eyJ...)" type="text">
+    <button onclick="connect()">🔌 Conectar y ver cartas</button>
+  </div>
+  <div class="log" id="log"></div>
+</div>
+
+<div id="s2">
+  <div class="box">
+    <h2>🎯 Sus cartas (RIVAL)</h2>
+    <div class="cards-row" id="rival-row"><div style="color:#475569;font-size:.8rem">Esperando...</div></div>
+  </div>
+  <div class="box">
+    <h2>Mis cartas</h2>
+    <div class="cards-row" id="my-row"><div style="color:#475569;font-size:.8rem">—</div></div>
+  </div>
+  <div class="box">
+    <h2>Candidatos — elegí cuál es el rival</h2>
+    <div id="cand-list"></div>
+  </div>
+  <div class="log" id="log2"></div>
+  <div class="raw" id="raw"></div>
+  <button onclick="doConnect()" style="margin-top:8px">🔄 Reintentar</button>
+  <button class="sec" onclick="goBack()">← Volver</button>
+</div>
+
+<script>
+var SERVER = 'https://truco-hackkkk.onrender.com';
+var SUIT_NAMES = ['espada','basto','oro','copa'];
+var SUIT_SYMS = ['♠','♣','♦','♥'];
+var rivalCards = [], myCards = [];
+var sid = '', wsat = '';
+
+// Cargar guardados
+sid = localStorage.getItem('gt_sid') || '';
+wsat = localStorage.getItem('gt_wsat') || '';
+if(sid) document.getElementById('sid').value = sid;
+if(wsat) document.getElementById('wsat').value = wsat;
+
+function setStatus(txt, state) {
+  document.getElementById('stxt').textContent = txt;
+  var d = document.getElementById('dot');
+  d.className = 'dot' + (state==='ok'?' ok':state==='err'?' err':state==='pulse'?' pulse':'');
+}
+
+function log(msg, screen) {
+  var el = document.getElementById(screen===2?'log2':'log');
+  if(!el) return;
+  var d = document.createElement('div');
+  d.textContent = new Date().toLocaleTimeString('es') + ' — ' + msg;
+  el.appendChild(d); el.scrollTop = el.scrollHeight;
+}
+
+function makeCard(card) {
+  var el = document.createElement('div');
+  if (!card) { el.className='card dorso'; return el; }
+  el.className = 'card ' + SUIT_NAMES[card.suit];
+  var rk = document.createElement('span'); rk.className='rk'; rk.textContent=card.rank;
+  var ss = document.createElement('span'); ss.className='ss'; ss.textContent=SUIT_SYMS[card.suit];
+  el.appendChild(rk); el.appendChild(ss);
+  return el;
+}
+
+function renderRow(id, cards) {
+  var row = document.getElementById(id); if(!row) return;
+  row.innerHTML = '';
+  if(!cards||cards.length===0){row.innerHTML='<div style="color:#475569;font-size:.8rem">—</div>';return;}
+  cards.forEach(function(c){row.appendChild(makeCard(c));});
+}
+
+function renderCandidates(cands) {
+  var list = document.getElementById('cand-list'); if(!list) return;
+  list.innerHTML = '';
+  if(!cands||cands.length===0){list.innerHTML='<div style="color:#475569;font-size:.75rem;padding:8px">Sin candidatos aún</div>';return;}
+  cands.forEach(function(c) {
+    var row = document.createElement('div'); row.className='cand-row';
+    var rb = document.createElement('button'); rb.className='rbtn'; rb.textContent='= Rival';
+    rb.onclick = function(){rivalCards=c.cards;renderRow('rival-row',rivalCards);log('Rival: '+c.cards.map(function(x){return x.rank+SUIT_SYMS[x.suit];}).join(' '),2);setStatus('Rival asignado ✓','ok');};
+    var mb = document.createElement('button'); mb.className='mbtn'; mb.textContent='= Yo';
+    mb.onclick = function(){myCards=c.cards;renderRow('my-row',myCards);};
+    var path = document.createElement('span'); path.className='cand-path'; path.textContent=c.path;
+    var cc = document.createElement('span'); cc.className='cand-cards';
+    cc.textContent='['+c.cards.length+'] '+c.cards.map(function(x){return x.rank+SUIT_SYMS[x.suit];}).join(' ');
+    row.appendChild(rb); row.appendChild(mb); row.appendChild(path); row.appendChild(cc);
+    list.appendChild(row);
+  });
+}
+
+async function connect() {
+  sid = document.getElementById('sid').value.trim();
+  wsat = document.getElementById('wsat').value.trim();
+  if(!sid){alert('Ingresá el connect.sid');return;}
+  localStorage.setItem('gt_sid', sid);
+  if(wsat) localStorage.setItem('gt_wsat', wsat);
+  document.getElementById('s1').style.display='none';
+  document.getElementById('s2').style.display='block';
+  await doConnect();
+}
+
+async function doConnect() {
+  setStatus('Conectando...', 'pulse');
+  log('Conectando al servidor...', 2);
+  try {
+    await fetch(SERVER+'/health').catch(function(){});
+    var res = await fetch(SERVER+'/gran-truco', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({connectSid: sid, wsAuthToken: wsat})
+    });
+    var data = await res.json();
+    log('Respuesta: '+JSON.stringify(data).slice(0,200), 2);
+    
+    if(data.rawLog) {
+      document.getElementById('raw').textContent = data.rawLog.slice(0,3).join('\n');
+    }
+    
+    if(data.candidates && data.candidates.length > 0) {
+      renderCandidates(data.candidates);
+      var arr3 = data.candidates.filter(function(c){return c.cards&&c.cards.length===3;});
+      if(arr3.length >= 2){
+        myCards=arr3[0].cards; rivalCards=arr3[1].cards;
+        renderRow('my-row',myCards); renderRow('rival-row',rivalCards);
+        setStatus('Cartas detectadas ✓','ok');
+        log('Rival: '+rivalCards.map(function(c){return c.rank+SUIT_SYMS[c.suit];}).join(' '),2);
+      } else if(arr3.length===1){
+        rivalCards=arr3[0].cards; renderRow('rival-row',rivalCards);
+        setStatus('1 mano detectada','ok');
+      } else {
+        setStatus('Datos recibidos — elegí rival ↑','ok');
+      }
+    } else {
+      setStatus(data.error||'Sin cartas aún','err');
+      log('Sin cartas. Raw: '+(data.rawLog?data.rawLog[0]||'vacío':'vacío'),2);
+    }
+  } catch(e) {
+    setStatus('Error: '+e.message,'err');
+    log('Error: '+e.message,2);
+  }
+}
+
+function goBack() {
+  document.getElementById('s1').style.display='block';
+  document.getElementById('s2').style.display='none';
+}
+
+setStatus('Verificando servidor...','pulse');
+fetch(SERVER+'/health').then(function(r){return r.json();}).then(function(d){
+  if(d.ok){setStatus('Servidor listo ✓','ok');log('Online v'+d.version);}
+}).catch(function(){setStatus('Servidor iniciando...','pulse');});
+</script>
+</body>
+</html>
