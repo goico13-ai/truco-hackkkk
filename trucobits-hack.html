@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trucobits – Ver Cartas</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:#0f172a;color:#e2e8f0;font-family:system-ui,sans-serif;min-height:100vh;padding:16px;}
+h1{font-size:1.3rem;color:#fff;margin-bottom:2px;}
+.sub{font-size:.8rem;color:#64748b;margin-bottom:14px;}
+.status-bar{display:flex;align-items:center;gap:8px;margin-bottom:14px;}
+.dot{width:10px;height:10px;border-radius:50%;background:#f97316;flex-shrink:0;}
+.dot.ok{background:#22c55e;}.dot.err{background:#ef4444;}
+.dot.pulse{animation:pulse 1s infinite;}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:.3;}}
+.stxt{font-size:.85rem;color:#94a3b8;}
+.box{background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin-bottom:12px;}
+.box h2{font-size:.7rem;text-transform:uppercase;letter-spacing:.1em;color:#64748b;margin-bottom:10px;}
+.cards-row{display:flex;gap:8px;flex-wrap:wrap;min-height:60px;align-items:center;}
+.card{width:42px;height:60px;border-radius:6px;background:#fff;
+  display:flex;flex-direction:column;align-items:center;justify-content:space-between;
+  padding:4px 3px;border:1px solid #e2e8f0;}
+.card .rk{font-size:17px;font-weight:900;line-height:1;}
+.card .ss{font-size:13px;line-height:1;}
+.espada .rk,.espada .ss{color:#1e40af;}
+.basto .rk,.basto .ss{color:#15803d;}
+.oro .rk,.oro .ss{color:#b45309;}
+.copa .rk,.copa .ss{color:#b91c1c;}
+input{background:#0f172a;border:2px solid #334155;color:#e2e8f0;border-radius:8px;
+  padding:10px 14px;font-size:.85rem;width:100%;margin-bottom:10px;}
+input:focus{outline:none;border-color:#3b82f6;}
+button{background:#2563eb;color:#fff;border:none;border-radius:8px;padding:12px;
+  font-size:.9rem;font-weight:600;width:100%;cursor:pointer;margin-bottom:8px;}
+button:active{opacity:.8;}
+button.sec{background:#1e293b;border:1px solid #334155;color:#94a3b8;}
+.hint{font-size:.75rem;color:#475569;margin-bottom:6px;line-height:1.5;}
+.log{background:#0a0f1e;border-radius:6px;padding:10px;font-size:.68rem;color:#64748b;
+  max-height:150px;overflow-y:auto;margin-top:8px;word-break:break-all;}
+.log div{padding:1px 0;}
+.cand-row{display:flex;align-items:center;gap:6px;padding:5px 0;
+  border-bottom:1px solid #0f172a;font-size:.75rem;}
+.cand-path{flex:1;color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.rbtn{background:#7c3aed;border:none;color:#fff;border-radius:4px;padding:3px 8px;cursor:pointer;font-size:.72rem;}
+.mbtn{background:#0e7490;border:none;color:#fff;border-radius:4px;padding:3px 8px;cursor:pointer;font-size:.72rem;}
+#s1{display:block;} #s2{display:none;}
+</style>
+</head>
+<body>
+<h1>🃏 Trucobits – Ver Cartas</h1>
+<p class="sub">Conecta al Socket.IO de la partida y lee las cartas</p>
+<div class="status-bar">
+  <span class="dot" id="dot"></span>
+  <span class="stxt" id="stxt">Esperando...</span>
+</div>
+
+<div id="s1">
+  <div class="box">
+    <h2>Datos de la partida</h2>
+    <p class="hint"><b>accessToken</b> — de la respuesta de /api/auth/refresh</p>
+    <input id="token" placeholder="eyJhbGci..." type="text">
+    <p class="hint"><b>gameId</b> — de la URL trucobits.com/game/play/GAME_ID</p>
+    <input id="gameid" placeholder="1999c157-8a50-4ce1-b9bb-0c9efaf29e87" type="text">
+    <p class="hint"><b>Cookie io</b> — del header Cookie en Spider Proxy</p>
+    <input id="iocookie" placeholder="a4cddc3e..." type="text">
+    <p class="hint"><b>refresh_token</b> — para renovar el token automáticamente</p>
+    <input id="refresh" placeholder="952b030789..." type="text">
+    <button onclick="connect()">🔌 Conectar y ver cartas</button>
+  </div>
+  <div class="log" id="log"></div>
+</div>
+
+<div id="s2">
+  <div class="box">
+    <h2>🎯 Sus cartas (RIVAL)</h2>
+    <div class="cards-row" id="rival-row"><div style="color:#475569;font-size:.8rem">Esperando...</div></div>
+  </div>
+  <div class="box">
+    <h2>Mis cartas</h2>
+    <div class="cards-row" id="my-row"><div style="color:#475569;font-size:.8rem">—</div></div>
+  </div>
+  <div class="box">
+    <h2>Candidatos — elegí cuál es el rival</h2>
+    <div id="cand-list"></div>
+  </div>
+  <div class="box">
+    <h2>Eventos Socket.IO recibidos</h2>
+    <div class="log" id="log2"></div>
+  </div>
+  <button onclick="doConnect()" style="margin-top:8px">🔄 Reintentar</button>
+  <button class="sec" onclick="goBack()">← Volver</button>
+</div>
+
+<script>
+var SERVER = 'https://truco-hackkkk.onrender.com';
+var SUIT_NAMES = ['espada','basto','oro','copa'];
+var SUIT_SYMS = ['♠','♣','♦','♥'];
+var accessToken='', gameId='', ioCookie='', refreshToken='';
+
+// Cargar guardados
+accessToken = localStorage.getItem('tb_token') || '';
+gameId = localStorage.getItem('tb_gameid') || '';
+ioCookie = localStorage.getItem('tb_io') || '';
+refreshToken = localStorage.getItem('tb_refresh') || '';
+if(accessToken) document.getElementById('token').value = accessToken;
+if(gameId) document.getElementById('gameid').value = gameId;
+if(ioCookie) document.getElementById('iocookie').value = ioCookie;
+if(refreshToken) document.getElementById('refresh').value = refreshToken;
+
+function setStatus(txt, state) {
+  document.getElementById('stxt').textContent = txt;
+  var d = document.getElementById('dot');
+  d.className = 'dot'+(state==='ok'?' ok':state==='err'?' err':state==='pulse'?' pulse':'');
+}
+function log(msg, s) {
+  var el = document.getElementById(s===2?'log2':'log');
+  if(!el) return;
+  var d = document.createElement('div');
+  d.textContent = new Date().toLocaleTimeString('es')+' — '+msg;
+  el.appendChild(d); el.scrollTop=el.scrollHeight;
+}
+function makeCard(c) {
+  var el = document.createElement('div');
+  el.className='card '+(SUIT_NAMES[c.suit]||'');
+  var rk=document.createElement('span'); rk.className='rk'; rk.textContent=c.rank;
+  var ss=document.createElement('span'); ss.className='ss'; ss.textContent=SUIT_SYMS[c.suit]||'?';
+  el.appendChild(rk); el.appendChild(ss); return el;
+}
+function renderRow(id, cards) {
+  var row=document.getElementById(id); if(!row) return;
+  row.innerHTML='';
+  if(!cards||!cards.length){row.innerHTML='<div style="color:#475569;font-size:.8rem">—</div>';return;}
+  cards.forEach(function(c){row.appendChild(makeCard(c));});
+}
+function renderCandidates(cands) {
+  var list=document.getElementById('cand-list'); if(!list) return;
+  list.innerHTML='';
+  if(!cands||!cands.length){list.innerHTML='<div style="color:#475569;font-size:.75rem;padding:8px">Sin candidatos</div>';return;}
+  cands.forEach(function(c) {
+    var row=document.createElement('div'); row.className='cand-row';
+    var rb=document.createElement('button'); rb.className='rbtn'; rb.textContent='= Rival';
+    rb.onclick=function(){renderRow('rival-row',c.cards);setStatus('Rival asignado ✓','ok');log('Rival: '+c.cards.map(function(x){return x.rank+SUIT_SYMS[x.suit];}).join(' '),2);};
+    var mb=document.createElement('button'); mb.className='mbtn'; mb.textContent='= Yo';
+    mb.onclick=function(){renderRow('my-row',c.cards);};
+    var path=document.createElement('span'); path.className='cand-path'; path.textContent=c.path;
+    var cc=document.createElement('span'); cc.className='cand-cards';
+    cc.textContent='['+c.cards.length+'] '+c.cards.map(function(x){return x.rank+SUIT_SYMS[x.suit];}).join(' ');
+    row.appendChild(rb); row.appendChild(mb); row.appendChild(path); row.appendChild(cc);
+    list.appendChild(row);
+  });
+}
+async function connect() {
+  accessToken=document.getElementById('token').value.trim();
+  gameId=document.getElementById('gameid').value.trim();
+  ioCookie=document.getElementById('iocookie').value.trim();
+  refreshToken=document.getElementById('refresh').value.trim();
+  if(!gameId){alert('Ingresá el gameId');return;}
+  localStorage.setItem('tb_token',accessToken);
+  localStorage.setItem('tb_gameid',gameId);
+  localStorage.setItem('tb_io',ioCookie);
+  localStorage.setItem('tb_refresh',refreshToken);
+  document.getElementById('s1').style.display='none';
+  document.getElementById('s2').style.display='block';
+  await doConnect();
+}
+async function doConnect() {
+  setStatus('Conectando...','pulse');
+  log('Conectando...', 2);
+  try {
+    fetch(SERVER+'/health').catch(function(){});
+    var res=await fetch(SERVER+'/trucobits',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({accessToken,gameId,ioCookie,refreshToken})
+    });
+    var data=await res.json();
+    if(data.events) log('Eventos: '+data.events.join(', '), 2);
+    if(data.rawLog) data.rawLog.forEach(function(l){log(l,2);});
+    if(data.candidates&&data.candidates.length>0) {
+      renderCandidates(data.candidates);
+      var arr3=data.candidates.filter(function(c){return c.cards&&c.cards.length===3;});
+      if(arr3.length>=2){
+        renderRow('my-row',arr3[0].cards);
+        renderRow('rival-row',arr3[1].cards);
+        setStatus('Cartas detectadas ✓','ok');
+      } else if(arr3.length===1){
+        renderRow('rival-row',arr3[0].cards);
+        setStatus('1 mano detectada — elegí rival ↑','ok');
+      } else {
+        setStatus('Datos recibidos — elegí rival ↑','ok');
+      }
+    } else {
+      setStatus(data.error||'Sin cartas aún','err');
+    }
+  } catch(e) {
+    setStatus('Error: '+e.message,'err');
+    log('Error: '+e.message, 2);
+  }
+}
+function goBack() {
+  document.getElementById('s1').style.display='block';
+  document.getElementById('s2').style.display='none';
+}
+setStatus('Verificando servidor...','pulse');
+fetch(SERVER+'/health').then(function(r){return r.json();}).then(function(d){
+  if(d.ok){setStatus('Servidor listo v'+d.version,'ok');log('Online');}
+}).catch(function(){setStatus('Servidor iniciando...','pulse');});
+</script>
+</body>
+</html>
